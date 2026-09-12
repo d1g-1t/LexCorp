@@ -78,11 +78,14 @@ def set_paseto_service(svc: PasetoService) -> None:
 
 
 async def get_current_user(
-    authorization: Annotated[str, Header()],
+    authorization: Annotated[str | None, Header()] = None,
 ) -> CurrentUser:
     """Extract and validate PASETO token from Authorization header."""
     if not _paseto:
         raise RuntimeError("Paseto service not initialized")
+
+    if not authorization:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Missing authorization header")
 
     scheme, _, token = authorization.partition(" ")
     if scheme.lower() != "bearer" or not token:
@@ -91,7 +94,7 @@ async def get_current_user(
     try:
         payload = _paseto.decode(token)
     except Exception:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or expired token")
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or expired token") from None
 
     if payload.get("type") != "access":
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid token type")

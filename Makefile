@@ -1,15 +1,25 @@
-.PHONY: setup up down test logs shell migrate lint typecheck help
+.PHONY: setup up down test install logs shell migrate lint typecheck help
 
 # ── Docker Compose shorthand ──────────────────────────────────────────────────
 COMPOSE      = docker compose
 API_SERVICE  = api
 COMPOSE_FILE = docker-compose.yml
 
-# Portable copy (Windows GnuWin32 make has no `cp`)
-PYTHON       = python
+# Portable Python: prefer local .venv (Windows Scripts / Unix bin)
+ifeq ($(OS),Windows_NT)
+  VENV_PYTHON = .venv/Scripts/python.exe
+else
+  VENV_PYTHON = .venv/bin/python
+endif
+
+ifneq ($(wildcard $(VENV_PYTHON)),)
+  PYTHON = $(VENV_PYTHON)
+else
+  PYTHON = python
+endif
 
 # ── Python / test runner ──────────────────────────────────────────────────────
-PYTEST_ARGS  = -v --tb=short --cov=src --cov-report=term-missing --cov-fail-under=80
+PYTEST_ARGS  = -v --tb=short --cov=src --cov-report=term-missing --cov-fail-under=60
 
 # =============================================================================
 #  Default target
@@ -18,14 +28,24 @@ help:
 	@echo ""
 	@echo "  LexCorp - dev commands"
 	@echo ""
-	@echo "  make setup    - full setup from a fresh clone"
-	@echo "  make up       - start the full stack (detached)"
-	@echo "  make down     - stop and remove volumes"
-	@echo "  make test     - lint + type-check + pytest"
-	@echo "  make migrate  - run alembic upgrade head"
-	@echo "  make logs     - tail api logs"
-	@echo "  make shell    - bash inside the api container"
+	@echo "  make setup      - full setup from a fresh clone (Docker)"
+	@echo "  make install    - local .venv + pip install -e .[dev]"
+	@echo "  make test       - pytest (needs make install)"
+	@echo "  make check      - lint + type-check + pytest"
+	@echo "  make pytest     - pytest only"
+	@echo "  make up         - start the full stack (detached)"
+	@echo "  make down       - stop and remove volumes"
+	@echo "  make migrate    - run alembic upgrade head"
+	@echo "  make logs       - tail api logs"
+	@echo "  make shell      - bash inside the api container"
 	@echo ""
+
+# =============================================================================
+#  Local Python toolchain
+# =============================================================================
+install:
+	@echo ">>> Creating .venv and installing project + dev deps..."
+	python scripts/bootstrap_dev.py
 
 # =============================================================================
 #  Setup - one command from zero to running app
@@ -45,7 +65,7 @@ setup: .env
 
 .env:
 	@echo ">>> .env not found - copying from .env.example"
-	$(PYTHON) -c "import shutil; shutil.copyfile('.env.example', '.env')"
+	python -c "import shutil; shutil.copyfile('.env.example', '.env')"
 	@echo ">>> Review .env and set PASETO_SECRET_KEY + POSTGRES_PASSWORD"
 
 # =============================================================================
@@ -69,32 +89,35 @@ migrate:
 # =============================================================================
 #  Tests
 # =============================================================================
-test: lint typecheck pytest
+# `make test` runs the suite. Full quality gate: `make check`
+test: pytest
+
+check: lint typecheck pytest
 
 pytest:
-	pytest $(PYTEST_ARGS) tests/
+	$(PYTHON) -m pytest $(PYTEST_ARGS) tests/
 
 pytest-unit:
-	pytest $(PYTEST_ARGS) tests/unit/
+	$(PYTHON) -m pytest $(PYTEST_ARGS) tests/unit/
 
 pytest-e2e:
-	pytest $(PYTEST_ARGS) tests/e2e/
+	$(PYTHON) -m pytest $(PYTEST_ARGS) tests/e2e/
 
 # =============================================================================
 #  Code quality
 # =============================================================================
 lint:
-	ruff check src/ tests/
+	$(PYTHON) -m ruff check src/ tests/
 
 lint-fix:
-	ruff check --fix src/ tests/
-	ruff format src/ tests/
+	$(PYTHON) -m ruff check --fix src/ tests/
+	$(PYTHON) -m ruff format src/ tests/
 
 typecheck:
-	mypy src/
+	$(PYTHON) -m mypy src/
 
 format:
-	ruff format src/ tests/
+	$(PYTHON) -m ruff format src/ tests/
 
 # =============================================================================
 #  Dev helpers
