@@ -80,11 +80,7 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     application.state.redis = redis
 
     # --- PASETO ---
-    paseto_svc = PasetoService(
-        secret_key=settings.paseto_secret_key,
-        access_token_ttl=settings.access_token_ttl,
-        refresh_token_ttl=settings.refresh_token_ttl,
-    )
+    paseto_svc = PasetoService(settings)
     set_paseto_service(paseto_svc)
 
     logger.info(
@@ -111,16 +107,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         settings = Settings()
 
     # Logging & tracing
-    setup_logging(json_output=not settings.debug)
+    setup_logging(settings)
     if settings.otel_exporter_otlp_endpoint:
-        setup_telemetry(
-            service_name=settings.app_name,
-            otlp_endpoint=settings.otel_exporter_otlp_endpoint,
-        )
+        setup_telemetry(settings)
 
     application = FastAPI(
-        title=settings.app_name,
-        version="1.0.0",
+        title=settings.app_title,
+        version=settings.app_version,
         description="LexCorp — AI-powered corporate governance platform",
         docs_url="/docs" if settings.debug else None,
         redoc_url="/redoc" if settings.debug else None,
@@ -160,7 +153,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(audit.router, prefix=api_prefix, tags=["Audit"])
     application.include_router(health.router, tags=["Health"])
 
-    logger.info("app_created", app_name=settings.app_name)
+    logger.info("app_created", app_name=settings.app_title)
     return application
 
 
