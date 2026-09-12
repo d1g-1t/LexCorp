@@ -1,0 +1,179 @@
+# ── LexCorp ── Docker Compose ─────
+# All ports are non-standard to avoid conflicts with host services.
+# API: 9100 | PG: 9432 | Redis: 9379 | Ollama: 9434
+# Flower: 9555 | Prometheus: 9190 | Grafana: 9000
+
+services:
+  # ── Application ────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: runtime
+    command: >
+      uvicorn src.main:app
+      --host 0.0.0.0
+      --port 9100
+      --workers 2
+      --log-level info
+    env_file: .env
+    ports:
+      - "9100:9100"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo:4317
+      OTEL_SERVICE_NAME: lexcorp-api
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9100/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: runtime
+    command: >
+      celery -A src.infrastructure.queue.celery_app worker
+      -Q lexcorp.meetings,lexcorp.calendar,lexcorp.ai,lexcorp.analytics,lexcorp.notifications
+      -c 4 --loglevel=info
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo:4317
+      OTEL_SERVICE_NAME: lexcorp-worker
+    healthcheck:
+      disable: true
+    restart: unless-stopped
+
+  beat:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: runtime
+    command: >
+      celery -A src.infrastructure.queue.celery_app beat
+      --loglevel=info
+    env_file: .env
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+    restart: unless-stopped
+
+  # ── Data stores ────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: lexcorp
+      POSTGRES_USER: cso
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cso_secret_change_me}
+    ports:
+      - "9432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cso -d lexcorp"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-redis_secret_change_me}
+    ports:
+      - "9379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-redis_secret_change_me}", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  # ── LLM (optional: docker compose --profile ai up -d) ──
+  ollama:
+    profiles: ["ai"]
+    image: ollama/ollama:latest
+    ports:
+      - "9434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+
+  # ── Task monitoring ────────────────────────────
+  flower:
+    image: mher/flower:2.0
+    command: celery --broker=redis://:${REDIS_PASSWORD:-redis_secret_change_me}@redis:6379/0 flower
+    ports:
+      - "9555:5555"
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  # ── Observability ──────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    ports:
+      - "9190:9090"
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    restart: unless-stopped
+
+  tempo:
+    image: grafana/tempo:2.4.0
+    command: ["-config.file=/etc/tempo.yaml"]
+    ports:
+      - "9317:4317"
+      - "9200:3200"
+    volumes:
+      - ./docker/tempo/tempo.yml:/etc/tempo.yaml:ro
+      - tempo_data:/var/tempo
+    restart: unless-stopped
+
+  loki:
+    image: grafana/loki:2.9.8
+    command: -config.file=/etc/loki/local-config.yaml
+    ports:
+      - "9300:3100"
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:10.4.0
+    ports:
+      - "9000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_SECURITY_ADMIN_USER: admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning
+      - ./docker/grafana/dashboards:/var/lib/grafana/dashboards
+    depends_on:
+      - prometheus
+      - tempo
+      - loki
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+  ollama_data:
+  tempo_data:
+  grafana_data:
